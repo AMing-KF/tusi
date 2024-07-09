@@ -9,18 +9,25 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from datetime import datetime, timedelta
 import time
 
+TOKEN = os.getenv('TOKEN')
+WEBHOOK_URL = f'https://tusi-wesroig870.replit.app/webhook'
+
 # Create a Flask web server
 app = Flask(__name__)
-
-
-# Function to run the Flask server
-def run_web_server():
-    app.run(host='0.0.0.0', port=8080)
 
 
 @app.route('/')
 def index():
     return "Bot is running!"
+
+
+@app.route('/webhook', methods=['POST'])
+def webhook_handler():
+    if request.method == "POST":
+        logging.debug("Webhook route called")
+        update = Update.de_json(request.get_json(force=True))
+        application.update_queue.put(update)
+        return 'ok'
 
 
 TOKEN = os.getenv('TOKEN')
@@ -255,6 +262,7 @@ async def handle_callback_query(update: Update,
         await query.edit_message_text('本群永久免费认证、上榜/推广！',
                                       reply_markup=reply_markup)
 
+
 # 删除消息的回调函数
 async def delete_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     job = context.job
@@ -267,17 +275,22 @@ async def delete_message(context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Failed to delete message_id {message_id}: {e}")
 
+
 # 添加一个字典来存储每个群组的成员的消息数量
 group_message_counts = {}
 
+
 # 处理群组中的消息
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_message(update: Update,
+                         context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
     chat_id = message.chat_id
     user = message.from_user
 
     # 不统计通过按钮发送的消息
-    if message.text in ["查看资源", "吐司推荐", "查看报告", "提交报告", "抽奖活动", "开通会员", "导航", "囡囡点此免费认证上榜"]:
+    if message.text in [
+            "查看资源", "吐司推荐", "查看报告", "提交报告", "抽奖活动", "开通会员", "导航", "囡囡点此免费认证上榜"
+    ]:
         return
 
     # 不统计群管理员、频道和机器人发送的消息
@@ -301,14 +314,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_username = user.username
 
     if user_id not in group_message_counts[chat_id]:
-        group_message_counts[chat_id][user_id] = {"name": user_name, "username": user_username, "count": 0}
+        group_message_counts[chat_id][user_id] = {
+            "name": user_name,
+            "username": user_username,
+            "count": 0
+        }
 
     group_message_counts[chat_id][user_id]["count"] += 1
 
     # 这里可以添加处理消息的其他逻辑
 
+
 # 处理机器人加入的群组
-async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_chat_member(update: Update,
+                             context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.chat_member.chat
     new_status = update.chat_member.new_chat_member.status
     if new_status == "member":
@@ -317,13 +336,16 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             group_message_counts[chat_id] = {}
         logger.info(f"Bot added to group {chat.title} (id: {chat_id})")
 
+
 # 定时发送统计信息
 def send_hourly_statistics(context):
     while True:
         now = datetime.now(pytz.timezone('Asia/Shanghai'))
         if 11 <= now.hour <= 23 and 0 <= now.minute <= 30:
             for chat_id, user_data in group_message_counts.items():
-                sorted_users = sorted(user_data.items(), key=lambda x: x[1]["count"], reverse=True)
+                sorted_users = sorted(user_data.items(),
+                                      key=lambda x: x[1]["count"],
+                                      reverse=True)
                 top_10_users = sorted_users[:10]
 
                 if top_10_users:
@@ -338,13 +360,16 @@ def send_hourly_statistics(context):
         # 每小时运行一次
         time.sleep(3600)
 
+
 # 定时发送最终统计消息
 def send_final_statistics(context):
     while True:
         now = datetime.now(pytz.timezone('Asia/Shanghai'))
         if now.hour == 0 and now.minute == 0:
             for chat_id, user_data in group_message_counts.items():
-                sorted_users = sorted(user_data.items(), key=lambda x: x[1]["count"], reverse=True)
+                sorted_users = sorted(user_data.items(),
+                                      key=lambda x: x[1]["count"],
+                                      reverse=True)
                 top_10_users = sorted_users[:10]
 
                 if top_10_users:
@@ -354,16 +379,23 @@ def send_final_statistics(context):
                         message += f"{i}. {data['name']} @{data['username']}      {data['count']}\n"
                     message += "以上是今天发言数量最多的人\n"
 
-                    context.bot.send_message(chat_id=chat_id, text=message,
-                                             reply_to_message_id=context.bot.get_chat(chat_id).pinned_message.message_id,
-                                             pin=True)
+                    context.bot.send_message(
+                        chat_id=chat_id,
+                        text=message,
+                        reply_to_message_id=context.bot.get_chat(
+                            chat_id).pinned_message.message_id,
+                        pin=True)
                     time.sleep(86400)  # 24小时后取消置顶
-                    context.bot.unpin_chat_message(chat_id, context.bot.get_chat(chat_id).pinned_message.message_id)
+                    context.bot.unpin_chat_message(
+                        chat_id,
+                        context.bot.get_chat(
+                            chat_id).pinned_message.message_id)
 
                 # 发送完统计消息后清除统计信息
                 group_message_counts[chat_id].clear()
 
         time.sleep(1)
+
 
 # 每天午夜清除统计信息
 def clear_statistics(context):
@@ -375,15 +407,25 @@ def clear_statistics(context):
 
         time.sleep(1)
 
-# 启动定时任务线程
-def start_statistics_thread(context):
-    threading.Thread(target=send_final_statistics, args=(context,), daemon=True).start()
-    threading.Thread(target=clear_statistics, args=(context,), daemon=True).start()
 
 # 启动定时任务线程
 def start_statistics_thread(context):
-    threading.Thread(target=send_hourly_statistics, args=(context,), daemon=True).start()
-    threading.Thread(target=send_final_statistics, args=(context,), daemon=True).start()
+    threading.Thread(target=send_final_statistics,
+                     args=(context, ),
+                     daemon=True).start()
+    threading.Thread(target=clear_statistics, args=(context, ),
+                     daemon=True).start()
+
+
+# 启动定时任务线程
+def start_statistics_thread(context):
+    threading.Thread(target=send_hourly_statistics,
+                     args=(context, ),
+                     daemon=True).start()
+    threading.Thread(target=send_final_statistics,
+                     args=(context, ),
+                     daemon=True).start()
+
 
 def main() -> None:
     # 创建应用程序实例
@@ -394,7 +436,9 @@ def main() -> None:
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
-    application.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+    application.add_handler(
+        ChatMemberHandler(handle_chat_member,
+                          ChatMemberHandler.MY_CHAT_MEMBER))
 
     # 启动定时任务线程
     start_statistics_thread(application)
@@ -404,7 +448,10 @@ def main() -> None:
     thread.start()
 
     # 启动机器人
-    application.run_polling()
+    application.run_webhook(listen='0.0.0.0',
+                            port=445,
+                            url_path=TOKEN,
+                            webhook_url=WEBHOOK_URL)
 
 
 if __name__ == "__main__":
