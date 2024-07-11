@@ -285,17 +285,6 @@ async def unpin_message_after_24_hours(context: ContextTypes.DEFAULT_TYPE,
         logger.error(f"Failed to unpin message: {e}")
 
 
-# 取消置顶消息
-async def unpin_message_after_24_hours(context: ContextTypes.DEFAULT_TYPE,
-                                       chat_id: int, message_id: int):
-    await asyncio.sleep(86400)
-    try:
-        await context.bot.unpin_chat_message(chat_id=chat_id,
-                                             message_id=message_id)
-    except Exception as e:
-        logger.error(f"Failed to unpin message: {e}")
-
-
 # 每天午夜清除统计数据
 async def clear_statistics(context: ContextTypes.DEFAULT_TYPE):
     async with lock:
@@ -333,7 +322,7 @@ async def telegram_bot_polling():
     application = Application.builder().token(TOKEN).job_queue(
         job_queue).build()
 
-    await application.initialize()  # 确保等待它
+    await application.initialize()
     await set_webhook(application, f'{WEBHOOK_URL}/webhook')
 
     application.add_handler(CommandHandler("start", start))
@@ -345,19 +334,22 @@ async def telegram_bot_polling():
         MessageHandler(filters.ChatType.GROUP & filters.TEXT,
                        handle_group_message))
 
+    job_queue.run_repeating(send_hourly_statistics, interval=3600, first=0)
+    job_queue.run_repeating(send_final_statistics, interval=86400, first=23400)
+    job_queue.run_repeating(clear_statistics, interval=86400, first=0)
+
     await application.start()
     try:
-        await application.run_polling()
+        await application.updater.start_polling()
     finally:
-        await application.stop()  # 确保等待它
-        await application.shutdown()  # 确保等待它
+        await application.stop()
+        await application.shutdown()
 
 
 async def main():
-    global application
-    context = ContextTypes.DEFAULT_TYPE()  # 初始化 context
     await asyncio.gather(run_web_server(), telegram_bot_polling(),
-                         hourly_task(context), daily_task(context))
+                         hourly_task(ContextTypes.DEFAULT_TYPE),
+                         daily_task(ContextTypes.DEFAULT_TYPE))
 
 
 if __name__ == "__main__":
