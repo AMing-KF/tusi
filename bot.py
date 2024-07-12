@@ -1,167 +1,160 @@
 import os
 import logging
-import asyncio
-import requests
-from replit import db
-from flask import Flask, request, jsonify
-from datetime import datetime, timedelta, timezone
-from telegram import Bot, Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, ChatMemberHandler, ContextTypes, filters
 
-# 创建 Flask 应用
-app = Flask(__name__)
-
-# 获取 TOKEN 和 group ID
+# 获取机器人TOKEN
 TOKEN = os.getenv('TOKEN')
-GROUP_ID = int(os.getenv('GROUP_ID'))
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')
-
-# 初始化 Telegram bot 和 application
-bot = Bot(token=TOKEN)
-application = Application.builder().token(TOKEN).build()
 
 # 设置日志记录
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@app.route('/')
-def home():
-    logger.debug("Home route called")
-    return "Hello, World!"
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    logger.debug("/health route called")
-    return jsonify(status='OK'), 200
+# /start命令处理函数，发送自定义键盘
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await send_keyboard(update, context, send_message=True)
 
-@app.route('/trigger_stats', methods=['GET'])
-def trigger_stats_route():
-    logger.debug("/trigger_stats route called")
-    try:
-        asyncio.run(trigger_stats_internal())
-        return jsonify(status='Statistics triggered successfully!'), 200
-    except asyncio.CancelledError:
-        return jsonify(status='Failed to trigger statistics.'), 500
 
-async def trigger_stats_internal():
-    await send_statistics_internal()
-    logger.debug("Statistics sent via manual trigger.")
+# 发送自定义键盘的函数
+async def send_keyboard(update: Update,
+                        context: ContextTypes.DEFAULT_TYPE,
+                        send_message=True) -> None:
+    keyboard = [['查看资源', '吐司推荐'], ['查看报告', '提交报告'], ['抽奖活动', '开通会员'],
+                ['囡囡点此免费认证上榜']]
+    reply_markup = ReplyKeyboardMarkup(keyboard,
+                                       resize_keyboard=True,
+                                       one_time_keyboard=False)
 
-@app.route('/debug', methods=['GET'])
-def debug():
-    logger.debug("/debug route called")
-    return "Debug route working!", 200
+    if send_message:
+        await update.message.reply_text('请选择一个选项:', reply_markup=reply_markup)
 
-def setup_webhook():
-    url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
-    data = {"url": WEBHOOK_URL}
-    response = requests.post(url, data=data)
-    if response.status_code != 200:
-        logger.error(f"设置Webhook失败: {response.text}")
-    else:
-        logger.info("Webhook设置成功！")
 
-# 检查是否是管理员
-async def is_admin(chat_id: int, user_id: int) -> bool:
-    try:
-        administrators = await bot.get_chat_administrators(chat_id)
-        return any(admin.user.id == user_id for admin in administrators)
-    except Exception as e:
-        logger.error(f"Error checking admin status: {e}")
-        return False
+# 删除消息的函数，根据 response_type 删除特定消息
+async def delete_message(context: ContextTypes.DEFAULT_TYPE) -> None:
+    job = context.job
+    response_type = job.data.get('response_type')
+    if response_type in {'bot_response',
+                         'user_text'}:  # 确保只删除标志为 bot_response 和 user_text 的消息
+        try:
+            await context.bot.delete_message(chat_id=job.data['chat_id'],
+                                             message_id=job.data['message_id'])
+            logger.info(
+                f"Deleted {response_type} message with message_id {job.data['message_id']}"
+            )
+        except Exception as e:
+            logger.error(f"无法删除消息: {e}")
 
-# 检查消息是否为 emoji
-def is_emoji_message(message: str) -> bool:
-    from emoji import is_emoji
-    return all(is_emoji(char) for char in message)
 
-# 处理消息
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
+# 处理自定义键盘按钮点击事件的函数
+async def handle_message(update: Update,
+                         context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text
     chat_id = update.effective_chat.id
-    message = update.effective_message
+    message_id = update.message.message_id
+    sent_message = None
 
-    logger.debug(f"Received message from user {user.id} in chat {chat_id}")
+    logger.info(f"Received message: {text}")
 
-    if await is_admin(chat_id, user.id):
-        logger.debug(f"User {user.id} is admin, ignoring message.")
-        return
+    # 如果消息是通过点击自定义键盘按钮生成的，将其计划删除
+    valid_texts = [
+        '查看资源', '吐司推荐', '查看报告', '提交报告', '抽奖活动', '开通会员', '囡囡点此免费认证上榜'
+    ]
+    if text in valid_texts:
+        context.job_queue.run_once(delete_message,
+                                   20,
+                                   data={
+                                       'chat_id': chat_id,
+                                       'message_id': message_id,
+                                       'response_type': 'user_text'
+                                   })
+        logger.info(
+            f"Scheduled user text message deletion for message_id {message_id}"
+        )
 
-    if update.effective_chat.type in ['channel', 'group', 'supergroup']:
-        logger.debug(f"Message in {update.effective_chat.type} ignored。")
-        return
+    # 处理特定的按钮点击事件并发送相应的消息
+    def create_reply_markup(buttons):
+        return InlineKeyboardMarkup(
+            [[InlineKeyboardButton(name, url=url) for name, url in button_row]
+             for button_row in buttons])
 
-    if message.sticker or message.photo or message.animation or is_emoji_message(message.text):
-        logger.debug("Message contains sticker/photo/animation/emoji, ignoring。")
-        return
+    responses = {
+        '查看资源': {
+            'text':
+            '吐司.正在努力收录全市资源！争取将客栈仓库塞满！',
+            'buttons': [[("罗湖区", "https://t.me/lmkzgather/9"),
+                         ("福田区", "https://t.me/lmkzgather/5"),
+                         ("南山区", "https://t.me/lmkzgather/7")],
+                        [("龙岗区", "https://t.me/lmkzgather/13"),
+                         ("宝安区", "https://t.me/szpages/2767"),
+                         ("龙华区", "https://t.me/lmkzgather/15")],
+                        [("抽奖活动专区", "https://t.me/lmkzgather/21")],
+                        [("电报注册/解禁/科学上网", "https://t.me/lmkzgather/21")]]
+        },
+        '吐司推荐': {
+            'text': '推荐的都是经过客栈认证的老师！',
+            'buttons': [[("吐司推荐榜单", "https://t.me/tusisz")]]
+        },
+        '查看报告': {
+            'text': '虽然审核很严格，但还是要自辩真假哦！',
+            'buttons': [[("龙门报告", "https://t.me/szhyChat")]]
+        },
+        '提交报告': {
+            'text': '提交报告需要提供预约记录哦！',
+            'buttons': [[("提交报告", "https://t.me/lmkzgather/1/36")]]
+        },
+        '抽奖活动': {
+            'text': '万一中奖了呢！',
+            'buttons': [[("抽奖活动专区", "https://t.me/lmkzgather/21")]]
+        },
+        '开通会员': {
+            'text': '可使用支付宝、微信和USDT进行支付，并在24小时内自动到账。',
+            'buttons': [[("自助开启电报会员", "https://t.me/TPGift_BOT")]]
+        },
+        '囡囡点此免费认证上榜': {
+            'text': '让我们一起互相成就吧！',
+            'buttons': [[("感谢你的支持", "https://t.me/lmkzgather/1/35")]]
+        }
+    }
 
-    user_key = f"user:{user.id}"
-    user_messages_key = f"user_msgs:{user.id}"
+    if text in responses:
+        reply_markup = create_reply_markup(responses[text]['buttons'])
+        sent_message = await update.message.reply_text(
+            responses[text]['text'], reply_markup=reply_markup)
+        # 计划删除由机器人响应生成的消息
+        context.job_queue.run_once(delete_message,
+                                   15,
+                                   data={
+                                       'chat_id': chat_id,
+                                       'message_id': sent_message.message_id,
+                                       'response_type': 'bot_response'
+                                   })
+        logger.info(
+            f"Scheduled bot response message deletion for message_id {sent_message.message_id}"
+        )
 
-    if message.text in db.get(user_messages_key, []):
-        logger.debug("Message text already recorded, ignoring。")
-        return
 
-    db[user_messages_key] = db.get(user_messages_key, []) + [message.text]
-    logger.debug(f"Updated user messages: {db[user_messages_key]}")
+# 处理新成员加入群组事件的函数，发送自定义键盘但不发送消息
+async def new_member(update: Update,
+                     context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.info("New member joined")
+    await send_keyboard(update, context, send_message=False)
 
-    user_data = db.get(user_key, {"name": user.name, "username": user.username, "count": 0})
-    user_data["count"] += 1
-    db[user_key] = user_data
-    logger.debug(f"Updated user data: {user_data}")
 
-# 发送统计数据
-async def send_statistics_internal() -> None:
-    users = sorted([(db[key]["name"], db[key]["username"], db[key]["count"]) for key in db.keys() if key.startswith("user:")],
-                    key=lambda x: x[2], reverse=True)[:10]
+# 主函数，设置Telegram应用和处理程序
+def main() -> None:
+    application = Application.builder().token(TOKEN).build()
 
-    if not users:
-        logger.debug("No users to send statistics for。")
-        return
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(
+        ChatMemberHandler(new_member, ChatMemberHandler.CHAT_MEMBER))
 
-    msg = "现在发送消息最多的是：\n\n"
-    for i, (name, username, count) in enumerate(users, 1):
-        msg += f"{i}. {name} @{username} {count} 条\n"
+    application.run_polling()
 
-    logger.debug(f"Sending statistics message: {msg}")
-    await bot.send_message(chat_id=GROUP_ID, text=msg)
-
-# 每天00:00发送统计结果并清空数据
-async def reset_and_send_statistics() -> None:
-    await send_statistics_internal()
-
-    msg = "今天发送消息最多的人是：\n\n"
-    users = sorted([(db[key]["name"], db[key]["username"], db[key]["count"]) for key in db.keys() if key.startswith("user:")],
-                    key=lambda x: x[2], reverse=True)[:10]
-
-    for i, (name, username, count) in enumerate(users, 1):
-        msg += f"{i}. {name} @{username} {count} 条\n"
-    
-    msg += "\n恭喜他们！"
-    logger.debug(f"Sending daily reset message: {msg}")
-    await bot.send_message(chat_id=GROUP_ID, text=msg)
-    logger.debug("Resetting user data in Replit Database。")
-    for key in db.keys():
-        del db[key]
-
-def schedule_jobs():
-    from threading import Timer
-
-    def cron_job():
-        now = datetime.now(tz=timezone(timedelta(hours=8)))
-        if now.hour == 0 and now.minute == 0:
-            asyncio.run(reset_and_send_statistics())
-        elif 11 <= now.hour <= 23 and now.minute == 0:
-            asyncio.run(send_statistics_internal())
-        next_run = now + timedelta(minutes=1)
-        Timer((next_run - now).total_seconds(), cron_job).start()
-
-    cron_job()
 
 if __name__ == '__main__':
-    setup_webhook()
-    schedule_jobs()
-    port = int(os.getenv("PORT", 5000))
-    logger.info(f"Starting app on port {port}")
-    logger.info(f"Environment variables: TOKEN={TOKEN}, GROUP_ID={GROUP_ID}, WEBHOOK_URL={WEBHOOK_URL}")
-    app.run(host="0.0.0.0", port=port, debug=True)
+    main()
